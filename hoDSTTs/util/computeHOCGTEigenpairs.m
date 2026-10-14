@@ -1,0 +1,82 @@
+function [evecs, lambdas, conv] = computeHOCGTEigenpairs(dataPath, windows, saveTag, maxOrder, stateSize)
+% Computes and saves off higher order TEs for system
+disp("Starting computeHOCGTEigenpairs")
+    
+% Load in tensors
+tensors_all = {};
+for jj = 1:size(windows, 1)
+    tensors = {};
+    for ii = 1:maxOrder
+        tensorData = load(fullfile(dataPath, saveTag + "_NONSYM_" + string(ii-1) + "_" + windows(jj, 1) + "_" + windows(jj, 2) + ".mat"));
+        tensors{ii} = tensorData.('CGT' + string(ii-1));
+    end
+    tensors_all{jj} = tensors;
+end
+disp("Loaded nonsymmetric tensors")
+
+% Symmetrize Tensors
+sym_tensors_all = {};
+for jj = 1:length(tensors_all)
+    sym_tensors = {};
+    for ii = 1:maxOrder
+        sym_tensors{ii} = symmetrize(tensor(tensors_all{jj}{ii}));
+    end
+    sym_tensors_all{jj} = sym_tensors;
+end
+disp("Symmetrized tensors")
+
+% Save off symmetric tensors 
+for jj = 1:size(windows, 1)
+    tensors = sym_tensors_all(jj);
+    for ii = 1:maxOrder
+        thisTensor = struct('thisTensor', tensors{1}{ii});
+        save(fullfile(dataPath, saveTag + "_SYM_" + string(ii-1) + "_" + windows(jj, 1) + "_" + windows(jj, 2) + ".mat"), 'thisTensor');
+    end
+end
+disp("Saved symmetrized tensors")
+
+% Compute eigenpairs using SSHOPM method
+num_windows = length(tensors_all);
+lambdas = zeros(maxOrder, num_windows);
+conv = zeros(maxOrder, num_windows);
+evecs = zeros(maxOrder, num_windows, stateSize); 
+maxGuessIter = 50; % Maximum number of random initial guesses to try if the first one does not converge
+
+for jj = 1:num_windows
+    for ii = 1:maxOrder
+        % Compute shift parameter as sum of absolute value of all tensor
+        % entries * (stateSize - 1) from eqn 26 & 27 of
+        % "LINEAR COVARIANCE FIDELITY CHECKS AND MEASURES OF NON-GAUSSIANITY" by Kulik et al 
+        shift_param = (stateSize - 1)*sum(abs(double(sym_tensors_all{jj}{ii})), 'all'); 
+        disp("Shift param for window " + string(jj) + " and order " + string(ii) + " is " + string(shift_param))
+        flag = -2; guessIter = 0;
+
+        while flag ~= 0 && guessIter <= maxGuessIter
+            disp("-> Guess Iter " + string(guessIter))
+
+            if guessIter == 0 && ii > 1  % Use lower order tensor eigenpair as initial guess
+                disp("-> Using lower order solution as initial guess")
+                [lambda, evec, flag] = eig_sshopm(sym_tensors_all{jj}{ii}, 'Shift', shift_param, 'Start', squeeze(evecs(ii-1, jj, :)));
+            else  % random initial guess
+                [lambda, evec, flag] = eig_sshopm(sym_tensors_all{jj}{ii}, 'Shift', shift_param);
+            end
+                
+            disp("-> Eval solver flag: " + string(flag) + " (0 = success, -1 = norm(x) = 0, -2 = max iters exceeded)")
+            guessIter = guessIter + 1;
+        end
+        if guessIter == maxGuessIter + 1
+            disp("!! !! !! !! ALL INITIAL GUESSES FAILED !! !! !! !! ")
+        end
+        lambdas(ii, jj) = lambda;
+        conv(ii, jj) = flag;
+        evecs(ii, jj, :) = (evec);
+    end
+end
+disp("Computed all eigenpairs")
+
+% Save off the eigenvalues and eigenvectors 
+save(fullfile(dataPath, saveTag+"_Rs.mat"), "evecs");
+save(fullfile(dataPath, saveTag+"_lambdas.mat"), "lambdas");
+disp("Saved data to " + fullfile(dataPath, saveTag))
+
+end
